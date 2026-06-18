@@ -35,3 +35,7 @@ articleSchema.index({ category: 1 });
 const Article = mongoose.model("Article", articleSchema);
 
 export default Article;
+
+
+
+// test
