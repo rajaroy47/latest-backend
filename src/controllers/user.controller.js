@@ -26,6 +26,36 @@ import {
 } from "../utils/index.js";
 
 // ==========================================================
+// HELPER: Parse nested form data (dot notation)
+// ==========================================================
+
+const parseNestedFields = (req) => {
+  const result = {};
+
+  // If body has direct nested objects (JSON)
+  if (req.body.address && typeof req.body.address === 'object') {
+    return req.body;
+  }
+
+  // Parse dot notation from FormData
+  for (const [key, value] of Object.entries(req.body)) {
+    if (key.includes('.')) {
+      const parts = key.split('.');
+      let current = result;
+      for (let i = 0; i < parts.length - 1; i++) {
+        if (!current[parts[i]]) current[parts[i]] = {};
+        current = current[parts[i]];
+      }
+      current[parts[parts.length - 1]] = value;
+    } else {
+      result[key] = value;
+    }
+  }
+
+  return result;
+};
+
+// ==========================================================
 // PROFILE MANAGEMENT
 // ==========================================================
 
@@ -73,6 +103,10 @@ export const getUserById = async (req, res) => {
   }
 };
 
+// ==========================================================
+// UPDATE USER PROFILE - FULLY FIXED
+// ==========================================================
+
 export const updateUserProfile = async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
@@ -81,7 +115,23 @@ export const updateUserProfile = async (req, res) => {
       return notFoundResponse(res, { message: "User not found" });
     }
 
-    const { fullName, phone, bio, address, identity, company, social, preferences } = req.body;
+    // Parse nested fields from FormData (dot notation) or JSON
+    const parsedBody = parseNestedFields(req);
+    
+    const { 
+      fullName, 
+      phone, 
+      bio,
+      address,
+      identity,
+      company,
+      social,
+      preferences
+    } = parsedBody;
+
+    // ==========================================================
+    // UPDATE BASIC FIELDS
+    // ==========================================================
 
     if (fullName && fullName.trim()) {
       user.fullName = fullName.trim();
@@ -95,14 +145,97 @@ export const updateUserProfile = async (req, res) => {
     }
 
     if (bio !== undefined) {
-      user.bio = bio.trim();
+      user.bio = bio?.trim() || '';
     }
 
-    // Address, Identity, Company, Social, Preferences updates
-    // ... (keep all your existing update logic)
+    // ==========================================================
+    // UPDATE ADDRESS
+    // ==========================================================
 
-    // Process Avatar Upload
+    if (address && typeof address === 'object') {
+      user.userDetails = user.userDetails || {};
+      user.userDetails.address = {
+        streetAddress: address.streetAddress || user.userDetails.address?.streetAddress || '',
+        city: address.city || user.userDetails.address?.city || '',
+        state: address.state || user.userDetails.address?.state || '',
+        postalCode: address.postalCode || user.userDetails.address?.postalCode || '',
+        country: address.country || user.userDetails.address?.country || 'India',
+      };
+    }
+
+    // ==========================================================
+    // UPDATE IDENTITY
+    // ==========================================================
+
+    if (identity && typeof identity === 'object') {
+      user.userDetails = user.userDetails || {};
+      user.userDetails.identity = {
+        panCard: identity.panCard || user.userDetails.identity?.panCard || '',
+        aadhaarCard: identity.aadhaarCard || user.userDetails.identity?.aadhaarCard || '',
+        gstNumber: identity.gstNumber || user.userDetails.identity?.gstNumber || '',
+      };
+    }
+
+    // ==========================================================
+    // UPDATE COMPANY
+    // ==========================================================
+
+    if (company && typeof company === 'object') {
+      user.userDetails = user.userDetails || {};
+      user.userDetails.company = {
+        name: company.name || user.userDetails.company?.name || '',
+        designation: company.designation || user.userDetails.company?.designation || '',
+        industry: company.industry || user.userDetails.company?.industry || '',
+        website: company.website || user.userDetails.company?.website || '',
+      };
+    }
+
+    // ==========================================================
+    // UPDATE SOCIAL
+    // ==========================================================
+
+    if (social && typeof social === 'object') {
+      user.userDetails = user.userDetails || {};
+      user.userDetails.social = {
+        linkedin: social.linkedin || user.userDetails.social?.linkedin || '',
+        twitter: social.twitter || user.userDetails.social?.twitter || '',
+        facebook: social.facebook || user.userDetails.social?.facebook || '',
+        instagram: social.instagram || user.userDetails.social?.instagram || '',
+      };
+    }
+
+    // ==========================================================
+    // UPDATE PREFERENCES
+    // ==========================================================
+
+    if (preferences && typeof preferences === 'object') {
+      user.userDetails = user.userDetails || {};
+      user.userDetails.preferences = {
+        language: preferences.language || user.userDetails.preferences?.language || 'en',
+        notifications: preferences.notifications !== undefined 
+          ? preferences.notifications === 'true' || preferences.notifications === true
+          : user.userDetails.preferences?.notifications !== undefined 
+            ? user.userDetails.preferences.notifications 
+            : true,
+        emailUpdates: preferences.emailUpdates !== undefined
+          ? preferences.emailUpdates === 'true' || preferences.emailUpdates === true
+          : user.userDetails.preferences?.emailUpdates !== undefined
+            ? user.userDetails.preferences.emailUpdates
+            : true,
+        darkMode: preferences.darkMode !== undefined
+          ? preferences.darkMode === 'true' || preferences.darkMode === true
+          : user.userDetails.preferences?.darkMode !== undefined
+            ? user.userDetails.preferences.darkMode
+            : false,
+      };
+    }
+
+    // ==========================================================
+    // PROCESS AVATAR UPLOAD
+    // ==========================================================
+
     if (req.file) {
+      // Delete old avatar if exists
       if (user.avatar) {
         const publicId = extractPublicIdFromUrl(user.avatar);
         if (publicId) {
@@ -123,6 +256,10 @@ export const updateUserProfile = async (req, res) => {
       });
       user.avatar = uploadedAvatar.secure_url;
     }
+
+    // ==========================================================
+    // SAVE USER
+    // ==========================================================
 
     user.markModified("userDetails");
     user.updatedBy = user._id;

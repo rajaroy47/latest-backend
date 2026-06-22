@@ -19,6 +19,7 @@ import servicePlanRoutes from "./routes/servicePlan.routes.js";
 import orderRoutes from "./routes/order.routes.js";
 import paymentRoutes from "./routes/payment.routes.js";
 import serviceStatusRoutes from "./routes/serviceStatus.routes.js";
+import notificationRoutes from "./routes/notification.routes.js";
 
 // Import Utils
 import { logger } from "./utils/index.js";
@@ -171,6 +172,7 @@ app.use("/api/payments", paymentRoutes);
 
 // Service Status Routes
 app.use("/api/service-status", serviceStatusRoutes);
+app.use("/api/notifications", notificationRoutes);
 
 
 

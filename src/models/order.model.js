@@ -126,8 +126,9 @@ orderSchema.index({ orderStatus: 1, createdAt: -1 });
 // ==========================================================
 
 orderSchema.virtual("formattedAmount").get(function() {
-  return `₹${this.amount.toLocaleString('en-IN')}`;
+  return this.amount ? `₹${this.amount.toLocaleString('en-IN')}` : '₹0';
 });
+
 
 orderSchema.virtual("isPaid").get(function() {
   return this.orderStatus === "completed" && this.razorpayPaymentId;

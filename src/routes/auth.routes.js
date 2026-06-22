@@ -10,7 +10,6 @@ import {
   resendVerificationEmail,
   forgotPassword,
   resetPassword,
-  checkResetToken,
   getCurrentUser,
 } from "../controllers/auth.controller.js";
 import { protect, optionalAuth } from "../middlewares/authMiddleware.js";
@@ -35,8 +34,6 @@ router.post("/forgot-password", forgotPassword);
 
 // Reset password with token
 router.post("/reset-password/:token", resetPassword);
-
-router.get("/check-reset-token/:token", checkResetToken);
 
 // Verify email with token
 router.get("/verify-email/:token", verifyEmail);

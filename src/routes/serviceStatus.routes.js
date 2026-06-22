@@ -10,6 +10,8 @@ import {
   updateServiceStatus,
   deleteServiceStatus,
   activateService,
+  completeService,      // ✅ NEW
+  cancelService,         // ✅ NEW
   deactivateService,
   getServiceStatusStats,
   checkUserHasActiveService,
@@ -55,10 +57,16 @@ router.put("/:id", updateServiceStatus);
 // Delete service status
 router.delete("/:id", deleteServiceStatus);
 
-// Activate service
+// Activate service (processing → active)
 router.post("/:id/activate", activateService);
 
-// Deactivate service
+// ✅ NEW: Complete service (active → completed)
+router.post("/:id/complete", completeService);
+
+// ✅ NEW: Cancel service (any status → cancelled)
+router.post("/:id/cancel", cancelService);
+
+// Deactivate service (any status → cancelled)
 router.post("/:id/deactivate", deactivateService);
 
 export default router;

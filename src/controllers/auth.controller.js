@@ -20,7 +20,6 @@ import {
     forbiddenResponse,
     conflictResponse,
     notFoundResponse,
-    validationErrorResponse,
     logger,
     isValidEmail,
     validatePassword,
@@ -31,42 +30,6 @@ const cookieOptions = {
     secure: process.env.NODE_ENV === "production",
     sameSite: "strict",
     path: "/",
-};
-
-// ==========================================================
-// HELPER: Check account status
-// ==========================================================
-
-const checkAccountStatus = (user) => {
-    if (user.isDeleted) {
-        return {
-            isValid: false,
-            status: 'deleted',
-            message: "Your account has been deleted."
-        };
-    }
-
-    if (user.isBlocked) {
-        return {
-            isValid: false,
-            status: 'blocked',
-            message: "Your account has been blocked. Please contact support."
-        };
-    }
-
-    if (user.isActive === false) {
-        return {
-            isValid: false,
-            status: 'deactivated',
-            message: "Your account has been deactivated. Please contact support."
-        };
-    }
-
-    return {
-        isValid: true,
-        status: 'active',
-        message: "Account is active"
-    };
 };
 
 // ==========================================================
@@ -136,10 +99,6 @@ export const registerUser = async (req, res) => {
     }
 };
 
-// ==========================================================
-// LOGIN USER (FULLY PROTECTED)
-// ==========================================================
-
 export const loginUser = async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -154,17 +113,14 @@ export const loginUser = async (req, res) => {
             return unauthorizedResponse(res, { message: "Invalid email or password" });
         }
 
-        // ==========================================================
-        // CHECK ACCOUNT STATUS
-        // ==========================================================
-        
-        const status = checkAccountStatus(user);
-        if (!status.isValid) {
-            logger.warn(`❌ ${status.status} user attempted login: ${email}`);
-            return forbiddenResponse(res, { message: status.message });
+        if (user.isDeleted) {
+            return forbiddenResponse(res, { message: "Your account has been deleted" });
         }
 
-        // Check if user is locked
+        if (user.isBlocked) {
+            return forbiddenResponse(res, { message: "Your account has been blocked" });
+        }
+
         if (user.isLocked) {
             const waitTime = Math.ceil((user.lockedUntil - new Date()) / 60000);
             return forbiddenResponse(res, {
@@ -172,14 +128,12 @@ export const loginUser = async (req, res) => {
             });
         }
 
-        // Verify password
         const isPasswordCorrect = await user.matchPassword(password);
         if (!isPasswordCorrect) {
             await user.incrementFailedLogin();
             return unauthorizedResponse(res, { message: "Invalid email or password" });
         }
 
-        // Reset failed login attempts on successful login
         await user.resetFailedLogin();
         user.lastLogin = new Date();
         await user.save({ validateBeforeSave: false });
@@ -193,8 +147,6 @@ export const loginUser = async (req, res) => {
         const loggedInUser = await User.findById(user._id).select(
             "-password -refreshToken -verificationToken -resetPasswordToken -__v"
         );
-
-        logger.info(`✅ User logged in: ${user.email}`);
 
         return res
             .status(200)
@@ -220,10 +172,6 @@ export const loginUser = async (req, res) => {
     }
 };
 
-// ==========================================================
-// REFRESH ACCESS TOKEN (FULLY PROTECTED)
-// ==========================================================
-
 export const refreshAccessToken = async (req, res) => {
     try {
         const incomingRefreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
@@ -242,23 +190,15 @@ export const refreshAccessToken = async (req, res) => {
             return unauthorizedResponse(res, { message: "User not found" });
         }
 
-        // ==========================================================
-        // CHECK ACCOUNT STATUS
-        // ==========================================================
-        
-        const status = checkAccountStatus(user);
-        if (!status.isValid) {
-            logger.warn(`❌ ${status.status} user attempted token refresh: ${user.email}`);
-            return forbiddenResponse(res, { message: status.message });
-        }
-
         if (user.refreshToken !== incomingRefreshToken) {
             return unauthorizedResponse(res, { message: "Invalid refresh token" });
         }
 
-        const accessToken = generateAccessToken(user);
+        if (!user.isActive || user.isDeleted) {
+            return forbiddenResponse(res, { message: "Your account is not active" });
+        }
 
-        logger.info(`🔄 Token refreshed for: ${user.email}`);
+        const accessToken = generateAccessToken(user);
 
         return res
             .status(200)
@@ -280,17 +220,12 @@ export const refreshAccessToken = async (req, res) => {
     }
 };
 
-// ==========================================================
-// LOGOUT USER
-// ==========================================================
-
 export const logoutUser = async (req, res) => {
     try {
         if (req.user?._id) {
             await User.findByIdAndUpdate(req.user._id, {
                 $unset: { refreshToken: 1 },
             });
-            logger.info(`🚪 User logged out: ${req.user.email}`);
         }
 
         return res
@@ -312,7 +247,7 @@ export const logoutUser = async (req, res) => {
 };
 
 // ==========================================================
-// EMAIL VERIFICATION (FULLY PROTECTED)
+// EMAIL VERIFICATION (AUTH)
 // ==========================================================
 
 export const verifyEmail = async (req, res) => {
@@ -334,22 +269,10 @@ export const verifyEmail = async (req, res) => {
             return badRequestResponse(res, { message: "Invalid or expired verification token" });
         }
 
-        // ==========================================================
-        // CHECK ACCOUNT STATUS
-        // ==========================================================
-        
-        const status = checkAccountStatus(user);
-        if (!status.isValid) {
-            logger.warn(`❌ ${status.status} user attempted email verification: ${user.email}`);
-            return forbiddenResponse(res, { message: status.message });
-        }
-
         user.isVerified = true;
         user.verificationToken = undefined;
         user.verificationTokenExpiry = undefined;
         await user.save();
-
-        logger.info(`✅ Email verified for: ${user.email}`);
 
         return successResponse(res, {
             message: "Email verified successfully. You can now login.",
@@ -363,26 +286,12 @@ export const verifyEmail = async (req, res) => {
     }
 };
 
-// ==========================================================
-// RESEND VERIFICATION EMAIL (FULLY PROTECTED)
-// ==========================================================
-
 export const resendVerificationEmail = async (req, res) => {
     try {
         const user = await User.findById(req.user._id);
 
         if (!user) {
             return notFoundResponse(res, { message: "User not found" });
-        }
-
-        // ==========================================================
-        // CHECK ACCOUNT STATUS
-        // ==========================================================
-        
-        const status = checkAccountStatus(user);
-        if (!status.isValid) {
-            logger.warn(`❌ ${status.status} user requested verification email: ${user.email}`);
-            return forbiddenResponse(res, { message: status.message });
         }
 
         if (user.isVerified) {
@@ -396,7 +305,6 @@ export const resendVerificationEmail = async (req, res) => {
 
         try {
             await sendVerificationEmail(user.email, user.fullName, verifyUrl);
-            logger.info(`📧 Verification email sent to: ${user.email}`);
         } catch (emailError) {
             logger.error("❌ Verification email failed:", emailError.message);
             return errorResponse(res, {
@@ -417,7 +325,7 @@ export const resendVerificationEmail = async (req, res) => {
 };
 
 // ==========================================================
-// FORGOT PASSWORD (FULLY PROTECTED)
+// PASSWORD RESET (AUTH)
 // ==========================================================
 
 export const forgotPassword = async (req, res) => {
@@ -434,28 +342,7 @@ export const forgotPassword = async (req, res) => {
 
         const user = await User.findByEmail(email);
 
-        // Don't reveal if user exists or not for security
         if (!user) {
-            return successResponse(res, {
-                message: "If your email is registered, you will receive a password reset link",
-            });
-        }
-
-        // ==========================================================
-        // CHECK ACCOUNT STATUS - Return generic message for security
-        // ==========================================================
-        
-        const status = checkAccountStatus(user);
-        if (!status.isValid) {
-            logger.warn(`❌ ${status.status} user attempted password reset: ${email}`);
-            return successResponse(res, {
-                message: "If your email is registered, you will receive a password reset link",
-            });
-        }
-
-        // Check if user is verified
-        if (!user.isVerified) {
-            logger.warn(`⚠️ Unverified user attempted password reset: ${email}`);
             return successResponse(res, {
                 message: "If your email is registered, you will receive a password reset link",
             });
@@ -468,7 +355,6 @@ export const forgotPassword = async (req, res) => {
 
         try {
             await sendPasswordResetEmail(user.email, user.fullName, resetUrl);
-            logger.info(`📧 Password reset email sent to: ${email}`);
         } catch (emailError) {
             user.resetPasswordToken = undefined;
             user.resetPasswordExpiry = undefined;
@@ -480,7 +366,7 @@ export const forgotPassword = async (req, res) => {
         }
 
         return successResponse(res, {
-            message: "If your email is registered, you will receive a password reset link",
+            message: "Password reset link sent to your email",
         });
 
     } catch (error) {
@@ -490,10 +376,6 @@ export const forgotPassword = async (req, res) => {
         });
     }
 };
-
-// ==========================================================
-// RESET PASSWORD (FULLY PROTECTED)
-// ==========================================================
 
 export const resetPassword = async (req, res) => {
     try {
@@ -531,17 +413,6 @@ export const resetPassword = async (req, res) => {
             return badRequestResponse(res, { message: "Invalid or expired reset token" });
         }
 
-        // ==========================================================
-        // CHECK ACCOUNT STATUS
-        // ==========================================================
-        
-        const status = checkAccountStatus(user);
-        if (!status.isValid) {
-            logger.warn(`❌ ${status.status} user attempted password reset via token: ${user.email}`);
-            return forbiddenResponse(res, { message: status.message });
-        }
-
-        // Update password
         user.password = password;
         user.passwordChangedAt = new Date();
         user.resetPasswordToken = undefined;
@@ -549,8 +420,6 @@ export const resetPassword = async (req, res) => {
         user.failedLoginAttempts = 0;
         user.lockedUntil = null;
         await user.save();
-
-        logger.info(`✅ Password reset successful for: ${user.email}`);
 
         return successResponse(res, {
             message: "Password reset successfully. Please login with your new password.",
@@ -565,61 +434,7 @@ export const resetPassword = async (req, res) => {
 };
 
 // ==========================================================
-// CHECK RESET TOKEN (NEW - FULLY PROTECTED)
-// ==========================================================
-
-export const checkResetToken = async (req, res) => {
-    try {
-        const { token } = req.params;
-
-        if (!token) {
-            return badRequestResponse(res, { message: "Reset token is required" });
-        }
-
-        const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
-
-        const user = await User.findOne({
-            resetPasswordToken: hashedToken,
-            resetPasswordExpiry: { $gt: Date.now() },
-        });
-
-        if (!user) {
-            return badRequestResponse(res, { 
-                message: "Invalid or expired reset token. Please request a new one." 
-            });
-        }
-
-        // ==========================================================
-        // CHECK ACCOUNT STATUS
-        // ==========================================================
-        
-        const status = checkAccountStatus(user);
-        if (!status.isValid) {
-            logger.warn(`❌ ${status.status} user attempted to check reset token: ${user.email}`);
-            return forbiddenResponse(res, { message: status.message });
-        }
-
-        // Mask email for security
-        const maskedEmail = maskEmail(user.email);
-
-        return successResponse(res, {
-            message: "Valid reset token",
-            data: { 
-                email: maskedEmail,
-                isVerified: user.isVerified
-            }
-        });
-
-    } catch (error) {
-        logger.error("❌ Check reset token error:", error);
-        return errorResponse(res, {
-            message: error.message || "Failed to validate reset token",
-        });
-    }
-};
-
-// ==========================================================
-// GET CURRENT USER (FULLY PROTECTED)
+// GET CURRENT USER (AUTH)
 // ==========================================================
 
 export const getCurrentUser = async (req, res) => {
@@ -629,16 +444,6 @@ export const getCurrentUser = async (req, res) => {
 
         if (!user) {
             return notFoundResponse(res, { message: "User not found" });
-        }
-
-        // ==========================================================
-        // CHECK ACCOUNT STATUS
-        // ==========================================================
-        
-        const status = checkAccountStatus(user);
-        if (!status.isValid) {
-            logger.warn(`❌ ${status.status} user attempted to get profile: ${user.email}`);
-            return forbiddenResponse(res, { message: status.message });
         }
 
         return successResponse(res, {
@@ -655,20 +460,6 @@ export const getCurrentUser = async (req, res) => {
 };
 
 // ==========================================================
-// HELPER: Mask email for security
-// ==========================================================
-
-const maskEmail = (email) => {
-    const [localPart, domain] = email.split('@');
-    if (localPart.length <= 2) {
-        return email;
-    }
-    const visibleChars = 2;
-    const maskedLocal = localPart.slice(0, visibleChars) + '*'.repeat(Math.min(localPart.length - visibleChars, 4));
-    return `${maskedLocal}@${domain}`;
-};
-
-// ==========================================================
 // EXPORT ALL
 // ==========================================================
 
@@ -681,6 +472,5 @@ export default {
     resendVerificationEmail,
     forgotPassword,
     resetPassword,
-    checkResetToken,
     getCurrentUser,
 };
