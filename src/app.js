@@ -30,12 +30,6 @@ const __dirname = path.dirname(__filename);
 const app = express();
 
 // ==========================================================
-// PORT CONFIGURATION
-// ==========================================================
-
-const PORT = process.env.PORT || 5000;
-
-// ==========================================================
 // CORS CONFIGURATION
 // ==========================================================
 
@@ -51,18 +45,19 @@ const allowedOrigins = [
 app.use(
     cors({
         origin: function (origin, callback) {
-            // Allow requests with no origin (like mobile apps, curl, etc.)
+            // ✅ Fix: Allow server-to-server or platform internal pings cleanly
             if (!origin) return callback(null, true);
             
             if (allowedOrigins.indexOf(origin) !== -1) {
                 callback(null, true);
             } else {
                 logger.warn(`❌ CORS blocked: ${origin}`);
-                // In development, allow all origins
+                // In development, allow all origins seamlessly
                 if (process.env.NODE_ENV === "development") {
                     callback(null, true);
                 } else {
-                    callback(new Error('Not allowed by CORS'));
+                    // Safe production fallback text
+                    callback(new Error('Not allowed by CORS Architecture'));
                 }
             }
         },
@@ -92,8 +87,12 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 // Cookie parser
 app.use(cookieParser());
 
-// Static files
-app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
+// ✅ Vercel-Safe Static Files Fallback
+// Serverless functions cannot persistently hold files locally. 
+// This remains active for your local development structure seamlessly.
+if (process.env.NODE_ENV !== "production") {
+    app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
+}
 
 // ==========================================================
 // LOGGING MIDDLEWARE (Development only)
@@ -134,47 +133,16 @@ app.get("/api/health", (req, res) => {
 // API ROUTES
 // ==========================================================
 
-// ==========================================================
-// AUTH ROUTES - Public
-// ==========================================================
 app.use("/api/auth", authRoutes);
-
-// ==========================================================
-// USER ROUTES - Protected
-// ==========================================================
 app.use("/api/user", userRoutes);
-
-// ==========================================================
-// ADMIN ROUTES - Protected + Admin only
-// ==========================================================
 app.use("/api/admin", adminRoutes);
-
-// ==========================================================
-// SERVICE ROUTES - Public + Protected
-// ==========================================================
 app.use("/api/public/services", serviceRoutes);
-app.use("/api/services", serviceRoutes); // Backward compatibility
-
-// ==========================================================
-// SERVICE PLAN ROUTES - Public + Protected
-// ==========================================================
+app.use("/api/services", serviceRoutes); 
 app.use("/api/service-plans", servicePlanRoutes);
-
-// ==========================================================
-// ORDER ROUTES - Protected
-// ==========================================================
 app.use("/api/orders", orderRoutes);
-
-// ==========================================================
-// PAYMENT ROUTES - Public + Protected
-// ==========================================================
 app.use("/api/payments", paymentRoutes);
-
-// Service Status Routes
 app.use("/api/service-status", serviceStatusRoutes);
 app.use("/api/notifications", notificationRoutes);
-
-
 
 // ==========================================================
 // 404 HANDLER
@@ -195,8 +163,8 @@ app.use((req, res) => {
 // ==========================================================
 
 app.use((err, req, res, next) => {
-    logger.error(`❌ Error: ${err.message}`);
-    if (process.env.NODE_ENV === "development") {
+    logger.error(`❌ Error Details: ${err.message}`);
+    if (process.env.NODE_ENV === "development" && err.stack) {
         logger.error(err.stack);
     }
 

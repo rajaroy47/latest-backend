@@ -23,31 +23,41 @@ const logFormat = winston.format.combine(
   })
 );
 
-const logger = winston.createLogger({
-  level: process.env.LOG_LEVEL || 'info',
-  format: logFormat,
-  transports: [
-    // Console transport
-    new winston.transports.Console({
-      format: winston.format.combine(
-        winston.format.colorize(),
-        winston.format.simple()
-      ),
-    }),
-    // File transport - combined logs
+// Vercel (and most serverless platforms) ship a read-only filesystem —
+// only /tmp is writable, and it doesn't persist between invocations anyway.
+// Writing to ./logs there throws synchronously at import time and crashes
+// the whole function. Detect that environment and skip file transports.
+const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+
+const transports = [
+  new winston.transports.Console({
+    format: winston.format.combine(
+      winston.format.colorize(),
+      winston.format.simple()
+    ),
+  }),
+];
+
+if (!isServerless) {
+  transports.push(
     new winston.transports.File({
       filename: path.join(__dirname, '../../logs/combined.log'),
       maxsize: 5242880, // 5MB
       maxFiles: 5,
     }),
-    // File transport - error logs
     new winston.transports.File({
       filename: path.join(__dirname, '../../logs/error.log'),
       level: 'error',
       maxsize: 5242880, // 5MB
       maxFiles: 5,
-    }),
-  ],
+    })
+  );
+}
+
+const logger = winston.createLogger({
+  level: process.env.LOG_LEVEL || 'info',
+  format: logFormat,
+  transports,
 });
 
 // ==========================================================
