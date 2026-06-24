@@ -152,7 +152,7 @@ export const loginUser = async (req, res) => {
             .status(200)
             .cookie("accessToken", accessToken, {
                 ...cookieOptions,
-                maxAge: 15 * 60 * 1000,
+                maxAge: 55 * 60 * 1000, // 55 minutes
             })
             .cookie("refreshToken", refreshToken, {
                 ...cookieOptions,
@@ -176,16 +176,21 @@ export const refreshAccessToken = async (req, res) => {
     try {
         const incomingRefreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
 
+        console.log("Incoming refresh token - ", incomingRefreshToken);
+
         if (!incomingRefreshToken) {
             return unauthorizedResponse(res, { message: "Refresh token missing" });
         }
 
         const decoded = verifyRefreshToken(incomingRefreshToken);
+
+        console.log("Decoded Data - ", decoded);
+
         if (!decoded) {
             return unauthorizedResponse(res, { message: "Invalid refresh token" });
         }
 
-        const user = await User.findById(decoded.id);
+        const user = await User.findById(decoded.id).select("refreshToken isActive isDeleted");
         if (!user) {
             return unauthorizedResponse(res, { message: "User not found" });
         }
@@ -193,6 +198,8 @@ export const refreshAccessToken = async (req, res) => {
         if (user.refreshToken !== incomingRefreshToken) {
             return unauthorizedResponse(res, { message: "Invalid refresh token" });
         }
+
+        console.log(user);
 
         if (!user.isActive || user.isDeleted) {
             return forbiddenResponse(res, { message: "Your account is not active" });
@@ -204,7 +211,7 @@ export const refreshAccessToken = async (req, res) => {
             .status(200)
             .cookie("accessToken", accessToken, {
                 ...cookieOptions,
-                maxAge: 15 * 60 * 1000,
+                maxAge: 55 * 60 * 1000, // max age - 55 minutes
             })
             .json({
                 success: true,

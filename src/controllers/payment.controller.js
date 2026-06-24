@@ -608,8 +608,7 @@
 
 
 
-
-// controllers/paymentController.js
+// controllers/payment.controller.js
 
 import crypto from "crypto";
 import mongoose from "mongoose";
@@ -622,6 +621,8 @@ import Payment from "../models/payment.model.js";
 import ServicePlan from "../models/servicePlan.model.js";
 import ServiceStatus from "../models/serviceStatus.model.js";
 import Notification from "../models/notification.model.js";
+import Invoice from "../models/invoice.model.js";
+import User from "../models/user.model.js";
 import {
   successResponse,
   errorResponse,
@@ -654,6 +655,264 @@ const getRequestMetadata = (req) => {
     device: ua.device.type || "desktop",
     userAgent: req.headers["user-agent"] || "",
   };
+};
+
+// ==========================================================
+// ✅ HELPER: Generate Invoice Number
+// ==========================================================
+
+const generateInvoiceNumber = async () => {
+  try {
+    const year = new Date().getFullYear();
+    const month = String(new Date().getMonth() + 1).padStart(2, "0");
+    const day = String(new Date().getDate()).padStart(2, "0");
+    const dateStr = `${year}${month}${day}`;
+    
+    // Count today's invoices (for sequential number)
+    const todayCount = await Invoice.countDocuments({
+      invoiceNumber: { $regex: `^INV-${dateStr}` }
+    });
+    
+    // Sequential number (4 digits)
+    const seqNum = String(todayCount + 1).padStart(4, "0");
+    
+    // 3 random digits (100-999)
+    const randomDigits = String(Math.floor(Math.random() * 900) + 100);
+    
+    // Format: INV-YYYYMMDD-SEQ-RND
+    // Example: INV-20260624-0001-847
+    const invoiceNumber = `INV-${dateStr}-${seqNum}-${randomDigits}`;
+    
+    // Check if this exact number exists (avoid collision)
+    const exists = await Invoice.findOne({ invoiceNumber });
+    if (exists) {
+      console.log(`⚠️ [INVOICE] Collision detected: ${invoiceNumber}, retrying...`);
+      return generateInvoiceNumber(); // Retry with new random digits
+    }
+    
+    console.log(`📄 [INVOICE] Generated invoice number: ${invoiceNumber}`);
+    return invoiceNumber;
+  } catch (error) {
+    console.error('❌ [INVOICE] Error generating invoice number:', error);
+    // Fallback: generate with timestamp + random
+    const timestamp = Date.now();
+    const random = String(Math.floor(Math.random() * 900) + 100);
+    return `INV-${timestamp}-${random}`;
+  }
+};
+
+// ==========================================================
+// ✅ HELPER: Generate Invoice from Payment (FIXED)
+// ==========================================================
+
+const generateInvoiceFromPaymentData = async (payment, order, service, user) => {
+  console.log('🔍 [INVOICE] ========== STARTING INVOICE GENERATION ==========');
+  console.log('🔍 [INVOICE] Input data:', {
+    paymentId: payment?._id?.toString(),
+    orderId: order?._id?.toString(),
+    serviceId: service?._id?.toString(),
+    userId: user?._id?.toString(),
+    hasUser: !!user,
+    userName: user?.fullName,
+    userEmail: user?.email,
+    paymentAmount: payment?.amount,
+    orderPlan: order?.plan,
+    serviceName: service?.name,
+  });
+
+  try {
+    // ✅ Check if invoice already exists
+    const existingInvoice = await Invoice.findOne({ payment: payment._id });
+    if (existingInvoice) {
+      console.log('📄 [INVOICE] Invoice already exists:', existingInvoice.invoiceNumber);
+      return existingInvoice;
+    }
+
+    // ✅ Validate required data
+    if (!payment) {
+      console.error('❌ [INVOICE] Payment is null or undefined');
+      return null;
+    }
+
+    if (!order) {
+      console.error('❌ [INVOICE] Order is null or undefined');
+      return null;
+    }
+
+    if (!service) {
+      console.error('❌ [INVOICE] Service is null or undefined');
+      return null;
+    }
+
+    if (!user) {
+      console.error('❌ [INVOICE] User is null or undefined!');
+      return null;
+    }
+
+    // ✅ Calculate amounts
+    const subtotal = payment.amount || 0;
+    const taxRate = 0; // 18%
+    const taxAmount = (subtotal * taxRate) / 100;
+    const discount = payment.discount || 0;
+    const totalAmount = subtotal + taxAmount - discount;
+
+    console.log('📝 [INVOICE] Calculated amounts:', {
+      subtotal,
+      taxRate,
+      taxAmount,
+      discount,
+      totalAmount,
+    });
+
+    // ✅ Generate invoice number
+    const invoiceNumber = await generateInvoiceNumber();
+
+    // ✅ Get user details safely
+    const userFullName = user.fullName || user.name || "User";
+    const userEmail = user.email || "";
+    const userPhone = user.phone || "";
+    const userAddress = user.userDetails?.address || {};
+    const userGstin = user.userDetails?.gstin || "";
+    const userPan = user.userDetails?.pan || "";
+
+    console.log('📝 [INVOICE] User details:', {
+      userFullName,
+      userEmail,
+      userPhone,
+      userGstin,
+      userPan,
+    });
+
+    // ✅ Create invoice data
+    const invoiceData = {
+      invoiceNumber,
+      user: payment.user,
+      order: payment.order,
+      payment: payment._id,
+      service: payment.service,
+      invoiceDate: new Date(),
+      dueDate: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000),
+      subtotal,
+      taxRate,
+      taxAmount,
+      discount,
+      totalAmount,
+      paymentMethod: payment.paymentMethod || "razorpay",
+      paymentStatus: "paid",
+      paymentDate: payment.paidAt || new Date(),
+      transactionId: payment.transactionId || payment.razorpayPaymentId || null,
+      
+      customerDetails: {
+        name: userFullName,
+        email: userEmail,
+        phone: userPhone,
+        address: userAddress,
+        gstin: userGstin,
+        pan: userPan,
+      },
+      
+      serviceDetails: {
+        name: service.name || "Service",
+        plan: payment.plan || order.plan || "standard",
+        description: service.shortDescription || service.description || "",
+        features: order.planFeatures || [],
+      },
+      
+      companyDetails: {
+        name: process.env.COMPANY_NAME || "CFI V2.0",
+        address: process.env.COMPANY_ADDRESS || "123, Business Park, Mumbai, India",
+        email: process.env.COMPANY_EMAIL || "support@cfiv2.com",
+        phone: process.env.COMPANY_PHONE || "+91 1234567890",
+        gstin: process.env.COMPANY_GSTIN || "22AAAAA0000A1Z5",
+        pan: process.env.COMPANY_PAN || "AAAAA0000A",
+        cin: process.env.COMPANY_CIN || "U12345MH2026PTC000001",
+        website: process.env.COMPANY_WEBSITE || "https://cfiv2.com",
+      },
+      
+      status: "generated",
+      notes: order.notes || "",
+    };
+
+    console.log('📝 [INVOICE] Invoice data prepared:', {
+      invoiceNumber: invoiceData.invoiceNumber,
+      customerName: invoiceData.customerDetails.name,
+      serviceName: invoiceData.serviceDetails.name,
+      totalAmount: invoiceData.totalAmount,
+    });
+
+    // ✅ Create invoice
+    const invoice = new Invoice(invoiceData);
+    await invoice.save();
+
+    console.log('✅ [INVOICE] Invoice saved successfully! ID:', invoice._id);
+
+    // ✅ Update payment with invoice reference
+    payment.invoice = invoice._id;
+    payment.invoiceUrl = `/api/invoices/${invoice._id}/download`;
+    payment.invoiceGenerated = true;
+    payment.invoiceGeneratedAt = new Date();
+    await payment.save();
+    console.log('✅ [INVOICE] Payment updated with invoice reference');
+
+    // ✅ Update order with invoice reference
+    order.invoiceNumber = invoiceNumber;
+    order.invoiceId = invoice._id;
+    order.invoiceGenerated = true;
+    order.invoiceGeneratedAt = new Date();
+    await order.save();
+    console.log('✅ [INVOICE] Order updated with invoice reference');
+
+    logger.info(`✅ Invoice generated: ${invoice.invoiceNumber}`, {
+      invoiceId: invoice._id,
+      paymentId: payment._id,
+      userId: user._id,
+    });
+
+    console.log('✅ [INVOICE] ========== INVOICE GENERATION COMPLETE ==========');
+    return invoice;
+
+  } catch (error) {
+    console.error('❌ [INVOICE] ========== INVOICE GENERATION FAILED ==========');
+    console.error('❌ [INVOICE] Error:', error.message);
+    console.error('❌ [INVOICE] Stack:', error.stack);
+    logger.error("Failed to generate invoice from payment:", error);
+    return null;
+  }
+};
+
+// ==========================================================
+// ✅ HELPER: Send Invoice Notification
+// ==========================================================
+
+const sendInvoiceNotification = async (userId, invoice) => {
+  try {
+    console.log(`📧 [INVOICE] Sending invoice notification to user: ${userId}`);
+    
+    await Notification.create({
+      user: userId,
+      type: 'system_info',
+      title: '📄 Invoice Generated',
+      message: `Your invoice ${invoice.invoiceNumber} has been generated.`,
+      priority: 'medium',
+      actionUrl: `/invoices/${invoice._id}`,
+      actionLabel: 'View Invoice',
+      metadata: {
+        invoiceId: invoice._id,
+        invoiceNumber: invoice.invoiceNumber,
+        amount: invoice.totalAmount,
+      },
+      createdBy: "system",
+    });
+
+    console.log(`✅ [INVOICE] Notification sent to user ${userId}`);
+    logger.info(`✅ Invoice notification sent to user ${userId}`, {
+      invoiceId: invoice._id,
+      invoiceNumber: invoice.invoiceNumber,
+    });
+  } catch (error) {
+    console.error('❌ [INVOICE] Failed to send invoice notification:', error);
+    logger.error("Failed to send invoice notification:", error);
+  }
 };
 
 // ==========================================================
@@ -958,7 +1217,7 @@ export const processPayment = async (req, res) => {
       },
     });
 
-    // ✅ Create payment pending notification
+    // Create payment pending notification
     await createPaymentNotification(req.user._id, 'payment_pending', {
       amount: amount,
       serviceName: service.name,
@@ -986,7 +1245,7 @@ export const processPayment = async (req, res) => {
 };
 
 // ==========================================================
-// ✅ VERIFY PAYMENT - With Professional Notifications
+// ✅ VERIFY PAYMENT - With Invoice Generation
 // ==========================================================
 
 export const verifyPayment = async (req, res) => {
@@ -994,14 +1253,19 @@ export const verifyPayment = async (req, res) => {
   session.startTransaction();
 
   try {
+    console.log('🔍 [PAYMENT] ========== STARTING PAYMENT VERIFICATION ==========');
+    console.log('🔍 [PAYMENT] Request body:', req.body);
+
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
 
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      console.log('❌ [PAYMENT] Missing required fields');
       await session.abortTransaction();
       session.endSession();
       return badRequestResponse(res, { message: "All payment fields are required" });
     }
 
+    console.log('🔍 [PAYMENT] Verifying signature...');
     // Verify signature
     const generatedSignature = crypto
       .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
@@ -1009,10 +1273,12 @@ export const verifyPayment = async (req, res) => {
       .digest("hex");
 
     if (generatedSignature !== razorpay_signature) {
+      console.log('❌ [PAYMENT] Invalid signature');
       await session.abortTransaction();
       session.endSession();
       return badRequestResponse(res, { message: "Invalid payment signature" });
     }
+    console.log('✅ [PAYMENT] Signature verified');
 
     // Fetch payment details from Razorpay
     let razorpayPayment = null;
@@ -1022,10 +1288,17 @@ export const verifyPayment = async (req, res) => {
     let cardType = null;
 
     try {
+      console.log('🔍 [PAYMENT] Fetching payment details from Razorpay...');
       razorpayPayment = await RazorpayInstance.payments.fetch(razorpay_payment_id);
+      console.log('✅ [PAYMENT] Razorpay payment fetched:', {
+        id: razorpayPayment.id,
+        method: razorpayPayment.method,
+        status: razorpayPayment.status,
+      });
       
       if (razorpayPayment) {
         const rawMethod = razorpayPayment.method || 'razorpay';
+        console.log('🔍 [PAYMENT] Raw payment method:', rawMethod);
         
         switch (rawMethod.toLowerCase()) {
           case 'card':
@@ -1063,26 +1336,37 @@ export const verifyPayment = async (req, res) => {
         });
       }
     } catch (fetchError) {
+      console.log('❌ [PAYMENT] Failed to fetch payment details:', fetchError.message);
       logger.warn(`Failed to fetch payment details from Razorpay: ${fetchError.message}`, {
         paymentId: razorpay_payment_id
       });
     }
 
     // Find the order
+    console.log('🔍 [PAYMENT] Finding order with RazorpayOrderId:', razorpay_order_id);
     const order = await Order.findOne({ razorpayOrderId: razorpay_order_id }).session(session);
 
     if (!order) {
+      console.log('❌ [PAYMENT] Order not found');
       await session.abortTransaction();
       session.endSession();
       return notFoundResponse(res, { message: "Order not found" });
     }
+    console.log('✅ [PAYMENT] Order found:', {
+      id: order._id,
+      user: order.user,
+      service: order.service,
+      amount: order.amount,
+    });
 
     // Check for existing payment
+    console.log('🔍 [PAYMENT] Checking for existing payment...');
     const existingPayment = await Payment.findOne({
       razorpayPaymentId: razorpay_payment_id,
     }).session(session);
 
     if (existingPayment) {
+      console.log('✅ [PAYMENT] Payment already verified');
       await session.commitTransaction();
       session.endSession();
       return successResponse(res, {
@@ -1095,12 +1379,34 @@ export const verifyPayment = async (req, res) => {
       });
     }
 
+    // ✅ Get user
+    console.log('🔍 [PAYMENT] Fetching user...');
+    const user = await User.findById(order.user).session(session);
+    
+    if (!user) {
+      console.log('❌ [PAYMENT] User not found');
+      await session.abortTransaction();
+      session.endSession();
+      return badRequestResponse(res, { message: "User not found" });
+    }
+    console.log('✅ [PAYMENT] User found:', {
+      id: user._id,
+      name: user.fullName,
+      email: user.email,
+    });
+
     // Get service details for notification
+    console.log('🔍 [PAYMENT] Fetching service...');
     const service = await Service.findById(order.service).session(session);
+    console.log('✅ [PAYMENT] Service found:', {
+      id: service?._id,
+      name: service?.name,
+    });
 
     const clientMetadata = getRequestMetadata(req);
 
     // ✅ Create payment record
+    console.log('🔍 [PAYMENT] Creating payment record...');
     const [payment] = await Payment.create(
       [
         {
@@ -1141,16 +1447,24 @@ export const verifyPayment = async (req, res) => {
       ],
       { session }
     );
+    console.log('✅ [PAYMENT] Payment created:', {
+      id: payment._id,
+      amount: payment.amount,
+      status: payment.paymentStatus,
+    });
 
     // Update order
+    console.log('🔍 [PAYMENT] Updating order...');
     order.paymentId = payment._id;
     order.razorpayPaymentId = razorpay_payment_id;
     order.signature = razorpay_signature;
     order.orderStatus = "completed";
     order.completedAt = new Date();
     await order.save({ session });
+    console.log('✅ [PAYMENT] Order updated');
 
     // Create or update service status
+    console.log('🔍 [PAYMENT] Creating/updating service status...');
     const existingServiceStatus = await ServiceStatus.findOne({
       serviceId: order.service,
       subscribedBy: order.user,
@@ -1173,11 +1487,35 @@ export const verifyPayment = async (req, res) => {
     } else {
       serviceStatus = existingServiceStatus;
     }
+    console.log('✅ [PAYMENT] Service status created/updated');
 
     // ✅ ==========================================================
-    // ✅ CREATE PROFESSIONAL PAYMENT SUCCESS NOTIFICATION
+    // ✅ GENERATE INVOICE AFTER SUCCESSFUL PAYMENT
     // ✅ ==========================================================
     
+    console.log('🔍 [PAYMENT] ========== ATTEMPTING TO GENERATE INVOICE ==========');
+    let invoice = null;
+    try {
+      invoice = await generateInvoiceFromPaymentData(payment, order, service, user);
+      
+      if (invoice) {
+        console.log(`✅ [PAYMENT] Invoice generated successfully: ${invoice.invoiceNumber}`);
+        // Send invoice notification
+        await sendInvoiceNotification(order.user, invoice);
+      } else {
+        console.log(`⚠️ [PAYMENT] Invoice generation returned null for payment: ${payment._id}`);
+      }
+    } catch (invoiceError) {
+      console.error('❌ [PAYMENT] Exception during invoice generation:', invoiceError);
+      logger.error("Failed to generate invoice:", invoiceError);
+      // Don't fail the transaction if invoice generation fails
+    }
+
+    // ✅ ==========================================================
+    // ✅ CREATE PAYMENT SUCCESS NOTIFICATION
+    // ✅ ==========================================================
+    
+    console.log('🔍 [PAYMENT] Creating payment success notification...');
     await createPaymentNotification(order.user, 'payment_success', {
       amount: order.amount,
       serviceName: service?.name || 'service',
@@ -1191,6 +1529,8 @@ export const verifyPayment = async (req, res) => {
       metadata: {
         razorpayOrderId: razorpay_order_id,
         razorpayPaymentId: razorpay_payment_id,
+        invoiceId: invoice?._id || null,
+        invoiceNumber: invoice?.invoiceNumber || null,
       },
     });
 
@@ -1198,10 +1538,13 @@ export const verifyPayment = async (req, res) => {
     // ✅ CREATE SERVICE STATUS NOTIFICATION
     // ✅ ==========================================================
     
+    console.log('🔍 [PAYMENT] Creating service status notification...');
     await createServiceStatusNotification(order.user, serviceStatus, service);
 
     await session.commitTransaction();
     session.endSession();
+
+    console.log('✅ [PAYMENT] ========== PAYMENT VERIFICATION COMPLETE ==========');
 
     return successResponse(res, {
       message: "Payment verified successfully",
@@ -1214,11 +1557,20 @@ export const verifyPayment = async (req, res) => {
         bankName: bankName || razorpayPayment?.bank || null,
         paymentMethodDetails: paymentMethodDetails,
         cardType: cardType,
+        invoice: invoice ? {
+          id: invoice._id,
+          number: invoice.invoiceNumber,
+          total: invoice.totalAmount,
+          url: `/api/invoices/${invoice._id}/download`,
+        } : null,
       },
     });
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
+    console.error('❌ [PAYMENT] ========== PAYMENT VERIFICATION FAILED ==========');
+    console.error('❌ [PAYMENT] Error:', error.message);
+    console.error('❌ [PAYMENT] Stack:', error.stack);
     logger.error("Verify payment error:", error);
     return errorResponse(res, {
       message: error.message || "Payment verification failed",
@@ -1320,12 +1672,15 @@ export const getMyPaymentDetails = async (req, res) => {
     const payments = await Payment.find({ user: req.user._id })
       .populate("service", "name slug category serviceImage")
       .populate("order", "plan orderStatus")
+      .populate("invoice", "invoiceNumber totalAmount status")
       .sort({ createdAt: -1 });
 
     const paymentsWithLabels = payments.map(payment => ({
       ...payment.toObject(),
       paymentMethodLabel: getPaymentMethodLabel(payment.paymentMethod),
       bankName: payment.bankName || null,
+      invoiceNumber: payment.invoice?.invoiceNumber || null,
+      invoiceStatus: payment.invoice?.status || null,
     }));
 
     return successResponse(res, {
@@ -1381,6 +1736,7 @@ export const getAllPayments = async (req, res) => {
         .populate("user", "fullName email")
         .populate("service", "name slug category")
         .populate("order", "plan orderStatus")
+        .populate("invoice", "invoiceNumber totalAmount status")
         .lean(),
       Payment.countDocuments(query),
     ]);
@@ -1389,6 +1745,8 @@ export const getAllPayments = async (req, res) => {
       ...payment,
       paymentMethodLabel: getPaymentMethodLabel(payment.paymentMethod),
       bankName: payment.bankName || null,
+      invoiceNumber: payment.invoice?.invoiceNumber || null,
+      invoiceStatus: payment.invoice?.status || null,
     }));
 
     return getPaginatedResponse(res, paymentsWithLabels, total, paginationOptions);
@@ -1615,7 +1973,8 @@ export const getPaymentByOrderId = async (req, res) => {
     const payment = await Payment.findOne({ order: orderId })
       .populate("user", "fullName email")
       .populate("service", "name slug")
-      .populate("order", "plan orderStatus");
+      .populate("order", "plan orderStatus")
+      .populate("invoice", "invoiceNumber totalAmount status");
 
     if (!payment) {
       return notFoundResponse(res, { message: "Payment not found" });
@@ -1629,6 +1988,8 @@ export const getPaymentByOrderId = async (req, res) => {
       ...payment.toObject(),
       paymentMethodLabel: getPaymentMethodLabel(payment.paymentMethod),
       bankName: payment.bankName || null,
+      invoiceNumber: payment.invoice?.invoiceNumber || null,
+      invoiceStatus: payment.invoice?.status || null,
     };
 
     return successResponse(res, {
@@ -1695,7 +2056,6 @@ export const webhookHandler = async (req, res) => {
         const failureReason = payload.payment.entity.error_description || "Payment failed";
         const paymentId = payload.payment.entity.id;
         
-        // Update payment status
         await Payment.findOneAndUpdate(
           { razorpayOrderId: failedOrderId },
           {
@@ -1707,11 +2067,6 @@ export const webhookHandler = async (req, res) => {
           }
         );
 
-        // ✅ ==========================================================
-        // ✅ CREATE PAYMENT FAILED NOTIFICATION
-        // ✅ ==========================================================
-        
-        // Find the order to get user and service details
         const order = await Order.findOne({ razorpayOrderId: failedOrderId })
           .populate("user", "_id")
           .populate("service", "name");

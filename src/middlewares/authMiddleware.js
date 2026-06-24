@@ -1,7 +1,7 @@
 // middleware/authMiddleware.js
 
 import jwt from "jsonwebtoken";
-import User from "../models/user.model.js"; // Fixed: Changed from user.model.js to User.js (consistent with Service model import pattern)
+import User from "../models/user.model.js";
 
 /* ==========================================================
    PROTECT MIDDLEWARE - Authentication
@@ -11,14 +11,19 @@ export const protect = async (req, res, next) => {
   try {
     let token;
     
-    // Check for token in Authorization header
+    // ✅ Check for token in Authorization header
     if (req.headers.authorization && req.headers.authorization.startsWith("Bearer")) {
       token = req.headers.authorization.split(" ")[1];
     }
     
-    // Check for token in cookies (optional - for additional security)
+    // ✅ Check for token in cookies (optional - for additional security)
     if (!token && req.cookies?.token) {
       token = req.cookies.token;
+    }
+    
+    // ✅ NEW: Check for token in query params (for invoice preview/download from browser)
+    if (!token && req.query?.token) {
+      token = req.query.token;
     }
     
     // Check if token exists
@@ -146,6 +151,11 @@ export const optionalAuth = async (req, res, next) => {
     
     if (req.headers.authorization && req.headers.authorization.startsWith("Bearer")) {
       token = req.headers.authorization.split(" ")[1];
+    }
+    
+    // ✅ Also check query params for optional auth
+    if (!token && req.query?.token) {
+      token = req.query.token;
     }
     
     if (token) {

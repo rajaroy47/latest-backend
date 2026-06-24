@@ -20,6 +20,7 @@ import orderRoutes from "./routes/order.routes.js";
 import paymentRoutes from "./routes/payment.routes.js";
 import serviceStatusRoutes from "./routes/serviceStatus.routes.js";
 import notificationRoutes from "./routes/notification.routes.js";
+import invoiceRoutes from "./routes/invoice.routes.js";
 
 // Import Utils
 import { logger } from "./utils/index.js";
@@ -143,6 +144,7 @@ app.use("/api/orders", orderRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/service-status", serviceStatusRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/invoices", invoiceRoutes);
 
 // ==========================================================
 // 404 HANDLER
